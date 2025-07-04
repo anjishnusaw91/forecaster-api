@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 yfinance
-numpy
 pandas
+prophet
 scikit-learn
-tensorflow==2.15.0
+python-multipart
