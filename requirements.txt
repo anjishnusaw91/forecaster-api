@@ -2,8 +2,7 @@ fastapi
 uvicorn
 yfinance
 pandas
-prophet
+numpy
 scikit-learn
+torch
 python-multipart
-keras
-tensorflow
