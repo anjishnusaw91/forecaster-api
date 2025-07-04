@@ -8,4 +8,3 @@ torch
 python-multipart
 pydantic
 prophet
-math
