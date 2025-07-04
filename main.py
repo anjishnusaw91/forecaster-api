@@ -81,7 +81,7 @@ app = FastAPI()
 # CORS for local dev and Vercel
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace with Vercel domain in production
+    allow_origins=["https://stockpoint.vercel.app"],  # Replace with Vercel domain in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
