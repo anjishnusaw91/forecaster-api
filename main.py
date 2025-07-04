@@ -98,9 +98,10 @@ import numpy as np
 import math
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import MinMaxScaler
-from keras.models import Sequential
-from keras.layers import LSTM, Dense
 from datetime import timedelta
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 
 app = FastAPI()
 
@@ -116,14 +117,27 @@ class ForecastRequest(BaseModel):
     symbol: str
     days: int = 5
 
+# PyTorch LSTM Model
+class StockLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(StockLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        _, (h_n, _) = self.lstm(x)
+        out = self.fc(h_n.squeeze(0))
+        return out
+
 @app.post("/api/generalForecaster")
 async def general_forecaster(req: ForecastRequest):
     try:
         symbol = req.symbol.upper()
         days = max(1, min(req.days, 30))
         lookback = 60
+        hidden_size = 64
+        epochs = 20
 
-        # STEP 1: Load data
         df = yf.download(symbol, period="2y", interval="1d")
         if df.empty or 'Close' not in df:
             return {"success": False, "error": f"No data found for {symbol}"}
@@ -135,7 +149,6 @@ async def general_forecaster(req: ForecastRequest):
         if len(df) < lookback + days + 30:
             return {"success": False, "error": f"Not enough data for {symbol}"}
 
-        # STEP 2: Normalize
         scaler = MinMaxScaler()
         scaled = scaler.fit_transform(df[['y']])
 
@@ -144,45 +157,52 @@ async def general_forecaster(req: ForecastRequest):
             X.append(scaled[i-lookback:i])
             y.append(scaled[i:i+days].flatten())
 
-        X = np.array(X)
-        y = np.array(y)
+        X, y = np.array(X), np.array(y)
+        X_tensor = torch.tensor(X, dtype=torch.float32)
+        y_tensor = torch.tensor(y, dtype=torch.float32)
 
-        # STEP 3: Train LSTM
-        model = Sequential()
-        model.add(LSTM(64, return_sequences=False, input_shape=(lookback, 1)))
-        model.add(Dense(days))
-        model.compile(optimizer='adam', loss='mse')
-        model.fit(X, y, epochs=10, batch_size=16, verbose=0)
+        dataset = TensorDataset(X_tensor, y_tensor)
+        loader = DataLoader(dataset, batch_size=16, shuffle=True)
 
-        # STEP 4: Predict future
-        last_seq = scaled[-lookback:].reshape(1, lookback, 1)
-        future_scaled = model.predict(last_seq)[0].reshape(-1, 1)
-        future = scaler.inverse_transform(future_scaled).flatten()
+        model = StockLSTM(input_size=1, hidden_size=hidden_size, output_size=days)
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+        for epoch in range(epochs):
+            for batch_X, batch_y in loader:
+                batch_X = batch_X.view(-1, lookback, 1)
+                optimizer.zero_grad()
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+
+        with torch.no_grad():
+            last_seq = torch.tensor(scaled[-lookback:], dtype=torch.float32).view(1, lookback, 1)
+            future_scaled = model(last_seq).view(-1, 1).numpy()
+            future = scaler.inverse_transform(future_scaled).flatten()
 
         forecast_start = df['ds'].iloc[-1] + timedelta(days=1)
         forecast_dates = [(forecast_start + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(days)]
 
-        # STEP 5: Backtest on recent actuals
-        recent_actuals = df['y'].values[-(days + lookback):]
-        pred_on_train = model.predict(X)
-        pred_rescaled = scaler.inverse_transform(pred_on_train)
-        y_true = scaler.inverse_transform(y)
+        pred_on_train = model(X_tensor).detach().numpy()
+        pred_rescaled = scaler.inverse_transform(pred_on_train.reshape(-1, 1)).flatten()
+        y_true_rescaled = scaler.inverse_transform(y_tensor.reshape(-1, 1)).flatten()
 
-        r2 = round(r2_score(y_true.flatten(), pred_rescaled.flatten()), 2)
-        rmse = round(math.sqrt(mean_squared_error(y_true.flatten(), pred_rescaled.flatten())), 2)
-        confidence = round(100 - (rmse / np.mean(recent_actuals) * 100), 2)
-        accuracy = round(np.mean(np.abs(pred_rescaled - y_true) / y_true <= 0.02) * 100, 2)
+        r2 = round(r2_score(y_true_rescaled, pred_rescaled), 2)
+        rmse = round(math.sqrt(mean_squared_error(y_true_rescaled, pred_rescaled)), 2)
+        confidence = round(100 - (rmse / np.mean(df['y'].values[-(days+lookback):]) * 100), 2)
+        accuracy = round(np.mean(np.abs(pred_rescaled - y_true_rescaled) / y_true_rescaled <= 0.02) * 100, 2)
 
-        # STEP 6: Add training predictions
+        # Historical prediction line
         last30 = df[-30:]
         last30_scaled = scaler.transform(last30[['y']])
         X_hist = []
         for i in range(lookback, len(last30_scaled)):
             X_hist.append(last30_scaled[i-lookback:i])
-        X_hist = np.array(X_hist)
-        hist_preds = model.predict(X_hist)
-        hist_preds_rescaled = scaler.inverse_transform(hist_preds)
-        predicted_hist = hist_preds_rescaled[:, -1]
+        X_hist = torch.tensor(X_hist, dtype=torch.float32).view(-1, lookback, 1)
+        hist_preds = model(X_hist).detach().numpy()
+        predicted_hist = scaler.inverse_transform(hist_preds)[:, -1]
 
         return {
             "success": True,
