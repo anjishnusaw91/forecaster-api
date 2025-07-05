@@ -54,7 +54,10 @@ async def general_forecaster(req: ForecastRequest):
         forecast = model.predict(future)
 
         # Step 5: Prepare responses
-        forecast_future = forecast[['ds', 'yhat']].tail(prediction_days)
+        # forecast_future = forecast[['ds', 'yhat']].tail(prediction_days)
+        # Get only the future dates (after the last date in train_df)
+        last_train_date = train_df['ds'].max()
+        forecast_future = forecast[forecast['ds'] > last_train_date][['ds', 'yhat']].head(prediction_days)
         train_predictions = model.predict(train_df[['ds']])
 
         # Step 6: Calculate metrics
