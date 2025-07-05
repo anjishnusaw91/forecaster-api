@@ -87,6 +87,15 @@ async def general_forecaster(req: ForecastRequest):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+from fastapi.responses import PlainTextResponse
+
+@app.get("/", response_class=PlainTextResponse)
+def root():
+    return "Welcome! Stock Forecaster API is live. Use /ping to check status."
+
+@app.get("/ping", response_class=PlainTextResponse)
+def ping():
+    return "API is live"
 
 # <-------------LSTM------------------------------------>
 # from fastapi import FastAPI
